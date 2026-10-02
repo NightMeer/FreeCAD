@@ -108,25 +108,52 @@ jobs:
           }
           $distPath = (Resolve-Path $distDir).Path
 
-          # 1. CMake Install in Zielverzeichnis mit absolutem Pfad
+          # 1. CMake Install
           pixi run cmake --install "build/$buildType" --prefix "$distPath"
 
-          # 2. DLLs & ALLE Qt-Plugins übertragen (inkl. iconengines für SVG-Icons!)
+          # 2. DLLs & Qt-Plugins
           Copy-Item -Path ".\.pixi\envs\default\Library\bin\*.dll" -Destination "$distDir\bin\" -Force
           Copy-Item -Path ".\.pixi\envs\default\Library\lib\qt6\plugins\*" -Destination "$distDir\bin\" -Recurse -Force
 
-          # 3. FreeCAD Module & Ressourcen übertragen
+          # 3. FreeCAD Module & Ressourcen
           Copy-Item -Path ".\build\$buildType\Mod" -Destination "$distDir\" -Recurse -Force
           Copy-Item -Path ".\build\$buildType\Ext" -Destination "$distDir\" -Recurse -Force -ErrorAction SilentlyContinue
           Copy-Item -Path ".\build\$buildType\data" -Destination "$distDir\" -Recurse -Force -ErrorAction SilentlyContinue
           Copy-Item -Path ".\build\$buildType\resources" -Destination "$distDir\" -Recurse -Force -ErrorAction SilentlyContinue
 
-          # 4. Python-Laufzeitumgebung übertragen
+          # 4. Python-Laufzeitumgebung
           Copy-Item -Path ".\.pixi\envs\default\Lib" -Destination "$distDir\" -Recurse -Force
           Copy-Item -Path ".\.pixi\envs\default\python*.exe" -Destination "$distDir\bin\" -Force -ErrorAction SilentlyContinue
           Copy-Item -Path ".\.pixi\envs\default\python*.dll" -Destination "$distDir\bin\" -Force -ErrorAction SilentlyContinue
           Copy-Item -Path ".\.pixi\envs\default\DLLs" -Destination "$distDir\" -Recurse -Force
           Copy-Item -Path ".\.pixi\envs\default\DLLs" -Destination "$distDir\bin\" -Recurse -Force
+
+          # 5. Isolations-Launcher für GitHub Actions kompilieren
+          $launcherCode = @"
+          using System;
+          using System.Diagnostics;
+          using System.IO;
+          class Program {
+              static void Main(string[] args) {
+                  string appData = Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData);
+                  string userDir = Path.Combine(appData, "Astocad-Self");
+                  if (!Directory.Exists(userDir)) Directory.CreateDirectory(userDir);
+                  Environment.SetEnvironmentVariable("FREECAD_USER_DATA", userDir);
+                  Environment.SetEnvironmentVariable("FREECAD_USER_HOME", userDir);
+                  string binDir = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "bin");
+                  string exePath = Path.Combine(binDir, "FreeCAD.exe");
+                  ProcessStartInfo psi = new ProcessStartInfo(exePath);
+                  psi.Arguments = string.Join(" ", args);
+                  psi.WorkingDirectory = binDir;
+                  psi.UseShellExecute = false;
+                  Process.Start(psi);
+              }
+          }
+          "@
+          $tempCs = Join-Path $env:TEMP "AstocadLauncher.cs"
+          Set-Content -Path $tempCs -Value $launcherCode -Encoding UTF8
+          $csc = "$env:WINDIR\Microsoft.NET\Framework64\v4.0.30319\csc.exe"
+          & $csc /target:winexe /optimize+ /out:"$distDir\Astocad-Self.exe" $tempCs
 
       - name: Compile Inno Setup Installer & Portable ZIP
         shell: pwsh

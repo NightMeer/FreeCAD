@@ -151,6 +151,46 @@ Copy-Item -Path ".\.pixi\envs\default\DLLs" -Destination "$distDir\" -Recurse -F
 Copy-Item -Path ".\.pixi\envs\default\DLLs" -Destination "$distDir\bin\" -Recurse -Force
 
 # ==========================================
+# 3.1 Isolations-Launcher (Astocad-Self.exe) kompilieren
+# ==========================================
+Write-Host "Kompiliere eigenstaendigen Launcher Astocad-Self.exe..." -ForegroundColor Cyan
+
+$launcherCode = @"
+using System;
+using System.Diagnostics;
+using System.IO;
+
+class Program {
+    static void Main(string[] args) {
+        string appData = Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData);
+        string userDir = Path.Combine(appData, "Astocad-Self");
+        if (!Directory.Exists(userDir)) Directory.CreateDirectory(userDir);
+
+        // Setzt die Umgebungsvariablen NUR lokal fuer DIESEN Prozess und Kindprozesse:
+        Environment.SetEnvironmentVariable("FREECAD_USER_DATA", userDir);
+        Environment.SetEnvironmentVariable("FREECAD_USER_HOME", userDir);
+
+        string binDir = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "bin");
+        string exePath = Path.Combine(binDir, "FreeCAD.exe");
+
+        ProcessStartInfo psi = new ProcessStartInfo(exePath);
+        psi.Arguments = string.Join(" ", args);
+        psi.WorkingDirectory = binDir;
+        psi.UseShellExecute = false; // Wichtig: Erbt die isolierten Umgebungsvariablen!
+
+        Process.Start(psi);
+    }
+}
+"@
+
+$tempCs = Join-Path $env:TEMP "AstocadLauncher.cs"
+Set-Content -Path $tempCs -Value $launcherCode -Encoding UTF8
+
+$csc = "$env:WINDIR\Microsoft.NET\Framework64\v4.0.30319\csc.exe"
+& $csc /target:winexe /optimize+ /out:"$distDir\Astocad-Self.exe" $tempCs
+Check-ExitCode "Launcher Kompilierung (Astocad-Self.exe)"
+
+# ==========================================
 # 4. Inno Setup Compiler ausführen
 # ==========================================
 $isccCandidates = @(

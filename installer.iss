@@ -21,12 +21,11 @@ AppendDefaultDirName=yes
 Name: "desktopicon"; Description: "{cm:CreateDesktopIcon}"; GroupDescription: "{cm:AdditionalIcons}"
 
 [Files]
-; WICHTIG: Nutzt jetzt dynamisch {#SourceDir} statt fest dist\*
 Source: "{#SourceDir}\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs
 
 [Icons]
-Name: "{userprograms}\Astocad-Self\Astocad-Self"; Filename: "{app}\bin\FreeCAD.exe"
-Name: "{userdesktop}\Astocad-Self"; Filename: "{app}\bin\FreeCAD.exe"; Tasks: desktopicon
+Name: "{userprograms}\Astocad-Self\Astocad-Self"; Filename: "{app}\Astocad-Self.exe"; IconFilename: "{app}\bin\FreeCAD.exe"
+Name: "{userdesktop}\Astocad-Self"; Filename: "{app}\Astocad-Self.exe"; IconFilename: "{app}\bin\FreeCAD.exe"; Tasks: desktopicon
 
 [Run]
-Filename: "{app}\bin\FreeCAD.exe"; Description: "{cm:LaunchProgram,Astocad-Self}"; Flags: nowait postinstall skipifsilent
+Filename: "{app}\Astocad-Self.exe"; Description: "{cm:LaunchProgram,Astocad-Self}"; Flags: nowait postinstall skipifsilent
