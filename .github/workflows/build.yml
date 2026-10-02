@@ -1,0 +1,162 @@
+name: Build Astocad-Self Installer
+
+on:
+  workflow_dispatch:
+    inputs:
+      build_type:
+        description: 'Wähle den Build-Typ:'
+        required: true
+        default: 'release'
+        type: choice
+        options:
+          - release
+          - debug
+
+jobs:
+  build:
+    name: Build & Package (${{ inputs.build_type }})
+    runs-on: windows-latest
+
+    # Umgebungsvariablen für Ccache-Optimierung (aus FreeCADs sub_buildPixi)
+    env:
+      CCACHE_DIR: "${{ github.workspace }}/ccache"
+      CCACHE_COMPRESS: "true"
+      CCACHE_COMPRESSLEVEL: "5"
+      CCACHE_MAXSIZE: "2G"
+      CCACHE_SLOPPINESS: "include_file_ctime,include_file_mtime,pch_defines,time_macros"
+      CCACHE_COMPILERCHECK: "%compiler%"
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+          fetch-depth: 0
+
+      - name: Ensure correct OndselSolver branch
+        shell: pwsh
+        run: |
+          $ondselDir = "src\3rdParty\OndselSolver"
+          $targetBranch = "paddle/codex/forward-rigid-body-dynamics"
+          
+          Push-Location $ondselDir
+          try {
+              $remotes = git remote
+              if ($remotes -notcontains "paddle") {
+                  git remote add paddle https://github.com/PaddleStroke/OndselSolver.git
+              }
+              git fetch paddle --quiet
+              git checkout $targetBranch --quiet 2>$null
+              if ($LASTEXITCODE -ne 0) {
+                  git checkout -b $targetBranch "paddle/$targetBranch" --quiet
+              }
+              Write-Host "OndselSolver ist auf $targetBranch" -ForegroundColor Green
+          } finally {
+              Pop-Location
+          }
+
+      - name: Set up MSVC Developer Command Prompt
+        uses: ilammy/msvc-dev-cmd@v1
+        with:
+          arch: x64
+
+      - name: Install Pixi
+        uses: prefix-dev/setup-pixi@v0.8.1
+        with:
+          pixi-version: latest
+          cache: true
+
+      - name: Install Inno Setup
+        shell: pwsh
+        run: |
+          choco install innosetup --no-progress -y
+
+      # -------------------------------------------------------------
+      # Ccache wiederherstellen (beschleunigt Folge-Builds drastisch)
+      # -------------------------------------------------------------
+      - name: Restore Compiler Cache
+        uses: actions/cache/restore@v4
+        with:
+          path: ${{ env.CCACHE_DIR }}
+          key: ccache-windows-${{ inputs.build_type }}-${{ github.sha }}
+          restore-keys: |
+            ccache-windows-${{ inputs.build_type }}-
+
+      - name: Build FreeCAD (${{ inputs.build_type }})
+        shell: pwsh
+        run: |
+          $buildType = "${{ inputs.build_type }}"
+          Write-Host "Starte Konfiguration und Build fuer: $buildType" -ForegroundColor Cyan
+          pixi run "configure-$buildType"
+          pixi run "build-$buildType"
+
+      # Cache nach erfolgreichem Build für den nächsten Run speichern
+      - name: Save Compiler Cache
+        uses: actions/cache/save@v4
+        if: always()
+        with:
+          path: ${{ env.CCACHE_DIR }}
+          key: ccache-windows-${{ inputs.build_type }}-${{ github.sha }}
+
+      - name: Stage Distribution Package
+        shell: pwsh
+        run: |
+          $buildType = "${{ inputs.build_type }}"
+          $distDir = ".\dist\$buildType"
+          if (!(Test-Path $distDir)) {
+              New-Item -ItemType Directory -Path $distDir -Force | Out-Null
+          }
+          $distPath = (Resolve-Path $distDir).Path
+
+          # 1. CMake Install in Zielverzeichnis mit absolutem Pfad
+          pixi run cmake --install "build/$buildType" --prefix "$distPath"
+
+          # 2. DLLs & ALLE Qt-Plugins übertragen (inkl. iconengines für SVG-Icons!)
+          Copy-Item -Path ".\.pixi\envs\default\Library\bin\*.dll" -Destination "$distDir\bin\" -Force
+          Copy-Item -Path ".\.pixi\envs\default\Library\lib\qt6\plugins\*" -Destination "$distDir\bin\" -Recurse -Force
+
+          # 3. FreeCAD Module & Ressourcen übertragen
+          Copy-Item -Path ".\build\$buildType\Mod" -Destination "$distDir\" -Recurse -Force
+          Copy-Item -Path ".\build\$buildType\Ext" -Destination "$distDir\" -Recurse -Force -ErrorAction SilentlyContinue
+          Copy-Item -Path ".\build\$buildType\data" -Destination "$distDir\" -Recurse -Force -ErrorAction SilentlyContinue
+          Copy-Item -Path ".\build\$buildType\resources" -Destination "$distDir\" -Recurse -Force -ErrorAction SilentlyContinue
+
+          # 4. Python-Laufzeitumgebung übertragen
+          Copy-Item -Path ".\.pixi\envs\default\Lib" -Destination "$distDir\" -Recurse -Force
+          Copy-Item -Path ".\.pixi\envs\default\python*.exe" -Destination "$distDir\bin\" -Force -ErrorAction SilentlyContinue
+          Copy-Item -Path ".\.pixi\envs\default\python*.dll" -Destination "$distDir\bin\" -Force -ErrorAction SilentlyContinue
+          Copy-Item -Path ".\.pixi\envs\default\DLLs" -Destination "$distDir\" -Recurse -Force
+          Copy-Item -Path ".\.pixi\envs\default\DLLs" -Destination "$distDir\bin\" -Recurse -Force
+
+      - name: Compile Inno Setup Installer & Portable ZIP
+        shell: pwsh
+        run: |
+          $buildType = "${{ inputs.build_type }}"
+          $distDir = ".\dist\$buildType"
+          $outputFilename = "Astocad-Self-$buildType-Setup"
+
+          # 1. Inno Setup kompilieren
+          $isccArgs = @("/DSourceDir=$distDir", "/F$outputFilename", ".\installer.iss")
+          if (Get-Command iscc -ErrorAction SilentlyContinue) {
+              iscc @isccArgs
+          } elseif (Test-Path "C:\Program Files (x86)\Inno Setup 6\ISCC.exe") {
+              & "C:\Program Files (x86)\Inno Setup 6\ISCC.exe" @isccArgs
+          } elseif (Test-Path "C:\Program Files\Inno Setup 6\ISCC.exe") {
+              & "C:\Program Files\Inno Setup 6\ISCC.exe" @isccArgs
+          } else {
+              throw "ISCC.exe wurde auf dem Runner nicht gefunden!"
+          }
+
+          # 2. Portables ZIP erzeugen
+          Write-Host "Erstelle portables ZIP-Archiv..." -ForegroundColor Cyan
+          $zipOutput = ".\Installer-Output\Astocad-Self-$buildType-Portable.zip"
+          Compress-Archive -Path "$distDir\*" -DestinationPath $zipOutput -Force
+
+      - name: Upload Artifacts (Installer & Portable)
+        uses: actions/upload-artifact@v4
+        with:
+          name: Astocad-Self-${{ inputs.build_type }}
+          path: |
+            Installer-Output/*.exe
+            Installer-Output/*.zip
+          if-no-files-found: error
